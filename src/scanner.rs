@@ -1,10 +1,77 @@
 use std::collections::HashMap;
-use std::io::stderr;
-use std::thread::current;
-use crate::token::{Token, TokenType};
+use std::iter::FromIterator;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TokenType {
+    LeftParen,
+    RightParen,
+    LeftBrace,
+    RightBrace,
+    Comma,
+    Dot,
+    Minus,
+    Plus,
+    Semicolon,
+    Slash,
+    Star,
 
-struct Scanner {
+    Bang,
+    BangEqual,
+    Equal,
+    EqualEqual,
+    Greater,
+    GreaterEqual,
+    Less,
+    LessEqual,
+
+    IDENTIFIER,
+    STRING,
+    NUMBER,
+
+    AND,
+    OR,
+
+    IF,
+    ELSE,
+    WHILE,
+    FOR,
+    TRUE,
+    FALSE,
+
+    CLASS,
+    FUN,
+    NIL,
+    SUPER,
+    THIS,
+    PRINT,
+    RETURN,
+
+    VAR,
+
+    EOF,
+}
+
+pub struct Token {
+    token_type: TokenType,
+    lexeme: String,
+    // literal;
+    line: usize,
+}
+
+impl Token {
+    pub(crate) fn new(token_type: TokenType, lexeme: String, line: usize) -> Token {
+        Token {
+            token_type,
+            lexeme,
+            line,
+        }
+    }
+    pub fn to_string(&self) -> String {
+        format!("L{}: {:?} {}", self.line, self.token_type, self.lexeme)
+    }
+}
+
+pub struct Scanner {
     source: String,
     tokens: Vec<Token>,
     // err: Option<Error>,
@@ -16,9 +83,35 @@ struct Scanner {
 }
 
 impl Scanner {
-    fn new(source: String) -> Self {
+    pub fn new(source: String) -> Self {
         // self.source = source;
-        Self { source, tokens: vec![], start: 0, current: 0, line: 1, keywords: HashMap::new() }
+        let mut ret = Self {
+            source,
+            tokens: vec![],
+            start: 0,
+            current: 0,
+            line: 1,
+            keywords: HashMap::from_iter([
+                ("and".into(), TokenType::AND),
+                ("or".into(), TokenType::OR),
+                ("true".into(), TokenType::TRUE),
+                ("false".into(), TokenType::FALSE),
+                ("if".into(), TokenType::IF),
+                ("else".into(), TokenType::ELSE),
+                ("while".into(), TokenType::WHILE),
+                ("for".into(), TokenType::FOR),
+                ("return".into(), TokenType::RETURN),
+                ("class".into(), TokenType::CLASS),
+                ("fun".into(), TokenType::FUN),
+                ("this".into(), TokenType::THIS),
+                ("super".into(), TokenType::SUPER),
+                ("print".into(), TokenType::PRINT),
+                ("nil".into(), TokenType::NIL),
+                ("var".into(), TokenType::VAR),
+            ]),
+        };
+        ret.scan_tokens();
+        ret
     }
     fn is_at_end(&self) -> bool {
         self.current >= self.source.len()
@@ -33,6 +126,12 @@ impl Scanner {
         self.advance();
         true
     }
+    fn scan_tokens(&mut self) {
+        while !self.is_at_end() {
+            self.start = self.current;
+            self.scan_token();
+        }
+    }
     fn scan_token(&mut self) {
         self.advance();
         if let Some(c) = self.source.chars().nth(self.current - 1) {
@@ -43,7 +142,9 @@ impl Scanner {
                 '}' => self.add_token(TokenType::RightBrace),
                 '/' => {
                     if self.advance_match('/') {
-                        while self.source.chars().nth(self.current) != Some('\n') && !self.is_at_end() {
+                        while self.peek() != Some('\n')
+                            && !self.is_at_end()
+                        {
                             self.advance();
                         }
                     } else {
@@ -85,8 +186,8 @@ impl Scanner {
                     }
                 }
                 '"' => {
-                    while self.source.chars().nth(self.current) != Some('"') && !self.is_at_end() {
-                        if self.source.chars().nth(self.current) == Some('\n') {
+                    while self.peek() != Some('"') && !self.is_at_end() {
+                        if self.peek() == Some('\n') {
                             self.line += 1;
                         }
                         self.advance();
@@ -96,21 +197,33 @@ impl Scanner {
                         return;
                     }
                     self.advance();
-                    self.add_token(TokenType::STRING);
+                    self.add_token_with_lexeme(
+                        TokenType::STRING,
+                        self.source[self.start..self.current].to_string(),
+                    );
                 }
                 '0'..='9' => {
-                    while self.source.chars().nth(self.current).unwrap().is_digit(10) {
+                    self.advance_while_true(|c| c.is_digit(10));
+                    if !self.is_at_end() && self.peek().unwrap() == '.' && self.peek_next(1).unwrap().is_digit(10) {
                         self.advance();
+                        self.advance_while_true(|c| c.is_digit(10));
                     }
-                    if self.source.chars().nth(self.current).unwrap() == '.' &&
-                        self.source.chars().nth(self.current + 1).unwrap().is_digit(10) {
-
-                        self.advance();
-                        while self.source.chars().nth(self.current).unwrap().is_digit(10) {
-                            self.advance();
-                        }
+                    self.add_token_with_lexeme(
+                        TokenType::NUMBER,
+                        self.source[self.start..self.current].to_string(),
+                    );
+                }
+                c if Self::is_alpha(&c) => {
+                    self.advance_while_true(|c| Self::is_alpha(&c) || c.is_digit(10));
+                    let text = self.source[self.start..self.current].to_string();
+                    if let Some(tokentype) = self.keywords.get(&text) {
+                        self.add_token(tokentype.clone());
+                    } else {
+                        self.add_token_with_lexeme(
+                            TokenType::IDENTIFIER,
+                            self.source[self.start..self.current].to_string(),
+                        );
                     }
-                    self.add_token(TokenType::NUMBER);
                 }
                 ' ' | '\r' | '\t' => {}
                 '\n' => self.line += 1,
@@ -121,17 +234,40 @@ impl Scanner {
         }
     }
 
-
     fn add_token(&mut self, token_type: TokenType) {
-        self.keywords.insert(self.source[self.start..self.current].parse().unwrap(), token_type);
+        self.tokens
+            .push(Token::new(token_type, "".to_string(), self.line));
     }
-    // fn scan_tokens(&mut self) -> Vec<Token> {
-    //     // while !self.isAtEnd() {
-    //     //     self.start = self.current;
-    //     //     self.scanToken();
-    //     // }
-    //     // self.tokens.push(Token::new(TokenType::EOF, "
-    //                 ".to_string(), self.line as isize));
-    //     // self.tokens.clone()
-    // }
+    fn add_token_with_lexeme(&mut self, token_type: TokenType, lexeme: String) {
+        self.tokens.push(Token::new(token_type, lexeme, self.line));
+    }
+    fn is_alpha(c: &char) -> bool {
+        c.is_ascii_alphanumeric() || c == &'_'
+    }
+    fn peek(&self) -> Option<char> {
+        self.source.chars().nth(self.current)
+    }
+    fn peek_next(&self, next: usize) -> Option<char> {
+        self.source.chars().nth(self.current + next)
+    }
+    fn advance_while_true<F>(&mut self, f: F)
+    where
+        F: Fn(&char) -> bool,
+    {
+        loop {
+            let next = self.peek();
+            if let Some(next) = next {
+                if f(&next) {
+                    self.advance();
+                    continue;
+                }
+            }
+            break;
+        }
+    }
+    pub fn print_tokens(&self) {
+        for i in &self.tokens {
+            println!("{}", i.to_string());
+        }
+    }
 }
